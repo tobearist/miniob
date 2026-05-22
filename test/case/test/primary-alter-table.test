@@ -1,0 +1,21 @@
+-- echo initialization
+CREATE TABLE alter_t(id int, name char(4));
+
+-- echo 1. empty table add column
+ALTER TABLE alter_t ADD COLUMN score int;
+INSERT INTO alter_t VALUES(1, 'ab', 10);
+SELECT * FROM alter_t;
+
+-- echo 2. duplicate column
+ALTER TABLE alter_t ADD COLUMN score int;
+
+-- echo 3. table not exist
+ALTER TABLE not_exist ADD COLUMN x int;
+
+-- echo 4. add column with index on old column
+CREATE TABLE alter_t2(id int, val int);
+INSERT INTO alter_t2 VALUES(1, 100);
+CREATE INDEX idx_alter_t2_id ON alter_t2(id);
+ALTER TABLE alter_t2 ADD COLUMN extra int;
+INSERT INTO alter_t2 VALUES(2, 200, 0);
+SELECT * FROM alter_t2;

@@ -16,6 +16,7 @@ See the Mulan PSL v2 for more details. */
 #include <string.h>
 
 #include "common/defs.h"
+#include "common/lang/filesystem.h"
 #include "common/lang/string.h"
 #include "common/lang/span.h"
 #include "common/lang/algorithm.h"
@@ -34,6 +35,24 @@ See the Mulan PSL v2 for more details. */
 #include "storage/record/lsm_record_scanner.h"
 #include "storage/table/heap_table_engine.h"
 #include "storage/table/lsm_table_engine.h"
+
+namespace {
+
+RC remove_file_if_exists(const string &path)
+{
+  if (!filesystem::exists(path)) {
+    return RC::SUCCESS;
+  }
+  std::error_code ec;
+  filesystem::remove(path, ec);
+  if (ec) {
+    LOG_ERROR("Failed to remove file %s, error=%s", path.c_str(), ec.message().c_str());
+    return RC::IOERR_WRITE;
+  }
+  return RC::SUCCESS;
+}
+
+}  // namespace
 
 Table::~Table()
 {
@@ -296,4 +315,94 @@ Index *Table::find_index_by_field(const char *field_name) const
 RC Table::sync()
 {
   return engine_->sync();
+}
+
+RC Table::add_column(const AttrInfoSqlNode &attr)
+{
+  if (engine_ == nullptr) {
+    return RC::INTERNAL;
+  }
+  return engine_->add_column(attr);
+}
+
+RC Table::drop()
+{
+  if (db_ == nullptr || common::is_blank(table_meta_.name())) {
+    LOG_WARN("Invalid table state when dropping table.");
+    return RC::INTERNAL;
+  }
+
+  if (table_meta_.storage_engine() == StorageEngine::LSM) {
+    LOG_WARN("Drop table is not supported for LSM storage engine. table=%s", table_meta_.name());
+    return RC::UNSUPPORTED;
+  }
+
+  const string db_path    = db_->path();
+  const string table_name = table_meta_.name();
+
+  vector<string> index_names;
+  index_names.reserve(table_meta_.index_num());
+  for (int i = 0; i < table_meta_.index_num(); i++) {
+    const IndexMeta *index_meta = table_meta_.index(i);
+    if (index_meta != nullptr) {
+      index_names.emplace_back(index_meta->name());  // const char * -> string
+    }
+  }
+
+  if (engine_ != nullptr) {
+    RC rc = engine_->sync();
+    if (OB_FAIL(rc)) {
+      LOG_WARN("Failed to sync table before drop. table=%s, rc=%s", table_name.c_str(), strrc(rc));
+    }
+    engine_.reset();
+  }
+
+  if (lob_handler_ != nullptr) {
+    delete lob_handler_;
+    lob_handler_ = nullptr;
+  }
+
+  RC first_error = RC::SUCCESS;
+
+  for (const string &index_name : index_names) {
+    const string index_path = table_index_file(db_path.c_str(), table_name.c_str(), index_name.c_str());
+    RC           rc         = remove_file_if_exists(index_path);
+    if (OB_FAIL(rc) && OB_SUCC(first_error)) {
+      first_error = rc;
+    }
+  }
+
+  const string data_path = table_data_file(db_path.c_str(), table_name.c_str());
+  RC           rc        = remove_file_if_exists(data_path);
+  if (OB_FAIL(rc) && OB_SUCC(first_error)) {
+    first_error = rc;
+  }
+
+  const string lob_path = table_lob_file(db_path.c_str(), table_name.c_str());
+  if (filesystem::exists(lob_path)) {
+    rc = remove_file_if_exists(lob_path);
+    if (OB_FAIL(rc) && OB_SUCC(first_error)) {
+      first_error = rc;
+    }
+  }
+
+  const string meta_path = table_meta_file(db_path.c_str(), table_name.c_str());
+  rc                     = remove_file_if_exists(meta_path);
+  if (OB_FAIL(rc) && OB_SUCC(first_error)) {
+    first_error = rc;
+  }
+
+  const string meta_tmp_path = meta_path + ".tmp";
+  rc                         = remove_file_if_exists(meta_tmp_path);
+  if (OB_FAIL(rc) && OB_SUCC(first_error)) {
+    first_error = rc;
+  }
+
+  if (OB_FAIL(first_error)) {
+    LOG_ERROR("Failed to drop table files. table=%s, rc=%s", table_name.c_str(), strrc(first_error));
+    return first_error;
+  }
+
+  LOG_INFO("Successfully dropped table files. table=%s", table_name.c_str());
+  return RC::SUCCESS;
 }

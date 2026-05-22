@@ -110,6 +110,33 @@ RC TableMeta::add_index(const IndexMeta &index)
   return RC::SUCCESS;
 }
 
+RC TableMeta::add_field(const AttrInfoSqlNode &attr)
+{
+  if (common::is_blank(attr.name.c_str())) {
+    LOG_ERROR("Field name cannot be empty");
+    return RC::INVALID_ARGUMENT;
+  }
+
+  if (field(attr.name.c_str()) != nullptr) {
+    LOG_WARN("Field %s already exists in table %s", attr.name.c_str(), name_.c_str());
+    return RC::SCHEMA_TABLE_EXIST;
+  }
+
+  const int visible_field_num = field_num() - sys_field_num();
+  const int field_offset      = record_size_;
+  FieldMeta field_meta;
+  RC        rc = field_meta.init(attr.name.c_str(), attr.type, field_offset, attr.length, true /*visible*/, visible_field_num);
+  if (OB_FAIL(rc)) {
+    LOG_ERROR("Failed to init new field meta. table=%s, field=%s", name_.c_str(), attr.name.c_str());
+    return rc;
+  }
+
+  fields_.push_back(field_meta);
+  record_size_ = field_offset + static_cast<int>(attr.length);
+  LOG_INFO("Added field %s to table %s, new record_size=%d", attr.name.c_str(), name_.c_str(), record_size_);
+  return RC::SUCCESS;
+}
+
 const char *TableMeta::name() const { return name_.c_str(); }
 
 const FieldMeta *TableMeta::trx_field() const { return &fields_[0]; }

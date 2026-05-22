@@ -176,6 +176,57 @@ RC Db::create_table(const char *table_name, span<const AttrInfoSqlNode> attribut
   return RC::SUCCESS;
 }
 
+RC Db::drop_table(const char *table_name)
+{
+  if (common::is_blank(table_name)) {
+    LOG_WARN("Invalid table name.");
+    return RC::INVALID_ARGUMENT;
+  }
+
+  auto iter = opened_tables_.find(table_name);
+  if (iter == opened_tables_.end()) {
+    LOG_WARN("Table %s does not exist.", table_name);
+    return RC::SCHEMA_TABLE_NOT_EXIST;
+  }
+
+  Table *table = iter->second;
+  RC      rc   = table->drop();
+  if (OB_FAIL(rc)) {
+    LOG_ERROR("Failed to drop table %s. rc=%s", table_name, strrc(rc));
+    return rc;
+  }
+
+  opened_tables_.erase(iter);
+  delete table;
+
+  LOG_INFO("Drop table success. table name=%s", table_name);
+  return RC::SUCCESS;
+}
+
+RC Db::alter_table_add_column(const char *table_name, const AttrInfoSqlNode &attr)
+{
+  if (common::is_blank(table_name)) {
+    LOG_WARN("Invalid table name.");
+    return RC::INVALID_ARGUMENT;
+  }
+
+  auto iter = opened_tables_.find(table_name);
+  if (iter == opened_tables_.end()) {
+    LOG_WARN("Table %s does not exist.", table_name);
+    return RC::SCHEMA_TABLE_NOT_EXIST;
+  }
+
+  Table *table = iter->second;
+  RC      rc   = table->add_column(attr);
+  if (OB_FAIL(rc)) {
+    LOG_ERROR("Failed to alter table %s add column %s. rc=%s", table_name, attr.name.c_str(), strrc(rc));
+    return rc;
+  }
+
+  LOG_INFO("Alter table success. table=%s, new column=%s", table_name, attr.name.c_str());
+  return RC::SUCCESS;
+}
+
 Table *Db::find_table(const char *table_name) const
 {
   unordered_map<string, Table *>::const_iterator iter = opened_tables_.find(table_name);

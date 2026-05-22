@@ -70,6 +70,16 @@ public:
   RC open(Db *db, const char *meta_file, const char *base_dir);
 
   /**
+   * @brief 删除表：释放内存资源并删除磁盘上的表文件
+   */
+  RC drop();
+
+  /**
+   * @brief 追加列（ALTER TABLE ADD COLUMN）
+   */
+  RC add_column(const AttrInfoSqlNode &attr);
+
+  /**
    * @brief 根据给定的字段生成一个记录/行
    * @details 通常是由用户传过来的字段，按照schema信息组装成一个record。
    * @param value_num 字段的个数

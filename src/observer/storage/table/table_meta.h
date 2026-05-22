@@ -41,6 +41,9 @@ public:
 
   RC add_index(const IndexMeta &index);
 
+  /// @brief 在表尾追加一个用户可见字段（ALTER TABLE ADD COLUMN）
+  RC add_field(const AttrInfoSqlNode &attr);
+
 public:
   int32_t             table_id() const { return table_id_; }
   const char         *name() const;

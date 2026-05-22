@@ -1,3 +1,12 @@
 {
-  "image": "oceanbase/miniob"
+  "name": "MiniOB",
+  "image": "oceanbase/miniob",
+  "workspaceFolder": "/root/miniob",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/root/miniob,type=bind",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-vscode.cpptools", "ms-vscode.cmake-tools"]
+    }
+  },
+  "postCreateCommand": "git config --global --add safe.directory /root/miniob || true"
 }

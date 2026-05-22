@@ -173,6 +173,16 @@ struct DropTableSqlNode
 };
 
 /**
+ * @brief 描述一个 alter table 语句（当前仅 ADD COLUMN）
+ * @ingroup SQLParser
+ */
+struct AlterTableSqlNode
+{
+  string         relation_name;  ///< 表名
+  AttrInfoSqlNode new_attribute; ///< 新增列定义
+};
+
+/**
  * @brief 描述一个analyze table语句
  * @ingroup SQLParser
  */
@@ -278,6 +288,7 @@ enum SqlCommandFlag
   SCF_DELETE,
   SCF_CREATE_TABLE,
   SCF_DROP_TABLE,
+  SCF_ALTER_TABLE,
   SCF_ANALYZE_TABLE,
   SCF_CREATE_INDEX,
   SCF_DROP_INDEX,
@@ -310,6 +321,7 @@ public:
   UpdateSqlNode       update;
   CreateTableSqlNode  create_table;
   DropTableSqlNode    drop_table;
+  AlterTableSqlNode   alter_table;
   AnalyzeTableSqlNode analyze_table;
   CreateIndexSqlNode  create_index;
   DropIndexSqlNode    drop_index;

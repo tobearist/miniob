@@ -57,6 +57,8 @@ public:
   // TODO: remove this function
   virtual RC init() = 0;
 
+  virtual RC add_column(const AttrInfoSqlNode &attr) { return RC::UNSUPPORTED; }
+
 protected:
   TableMeta *table_meta_ = nullptr;
 };

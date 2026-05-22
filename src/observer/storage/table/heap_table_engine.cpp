@@ -9,11 +9,33 @@ MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 See the Mulan PSL v2 for more details. */
 
 #include "storage/table/heap_table_engine.h"
+
+#include <fstream>
+
+#include "common/lang/filesystem.h"
 #include "storage/record/heap_record_scanner.h"
 #include "common/log/log.h"
 #include "storage/index/bplus_tree_index.h"
 #include "storage/common/meta_util.h"
 #include "storage/db/db.h"
+
+namespace {
+
+RC remove_file_if_exists(const string &path)
+{
+  if (!filesystem::exists(path)) {
+    return RC::SUCCESS;
+  }
+  std::error_code ec;
+  filesystem::remove(path, ec);
+  if (ec) {
+    LOG_ERROR("Failed to remove file %s, error=%s", path.c_str(), ec.message().c_str());
+    return RC::IOERR_WRITE;
+  }
+  return RC::SUCCESS;
+}
+
+}  // namespace
 
 
 HeapTableEngine::~HeapTableEngine()
@@ -340,4 +362,198 @@ RC HeapTableEngine::open()
     indexes_.push_back(index);
   }
   return rc;
+}
+
+RC HeapTableEngine::persist_table_meta()
+{
+  string tmp_file = table_meta_file(db_->path().c_str(), table_meta_->name()) + ".tmp";
+  fstream fs;
+  fs.open(tmp_file, ios_base::out | ios_base::binary | ios_base::trunc);
+  if (!fs.is_open()) {
+    LOG_ERROR("Failed to open meta tmp file. file=%s", tmp_file.c_str());
+    return RC::IOERR_OPEN;
+  }
+  if (table_meta_->serialize(fs) < 0) {
+    LOG_ERROR("Failed to serialize table meta. file=%s", tmp_file.c_str());
+    return RC::IOERR_WRITE;
+  }
+  fs.close();
+
+  string meta_file = table_meta_file(db_->path().c_str(), table_meta_->name());
+  if (rename(tmp_file.c_str(), meta_file.c_str()) != 0) {
+    LOG_ERROR("Failed to rename meta tmp file %s to %s", tmp_file.c_str(), meta_file.c_str());
+    return RC::IOERR_WRITE;
+  }
+  return RC::SUCCESS;
+}
+
+RC HeapTableEngine::rebuild_indexes(Trx *trx)
+{
+  RC rc = RC::SUCCESS;
+  const int index_num = table_meta_->index_num();
+  for (int i = 0; i < index_num; i++) {
+    const IndexMeta *index_meta = table_meta_->index(i);
+    const FieldMeta *field_meta = table_meta_->field(index_meta->field());
+    if (field_meta == nullptr) {
+      LOG_ERROR("Invalid index field. table=%s, index=%s", table_meta_->name(), index_meta->name());
+      return RC::INTERNAL;
+    }
+
+    BplusTreeIndex *index      = new BplusTreeIndex();
+    string          index_file = table_index_file(db_->path().c_str(), table_meta_->name(), index_meta->name());
+    rc                         = index->create(table_, index_file.c_str(), *index_meta, *field_meta);
+    if (rc != RC::SUCCESS) {
+      delete index;
+      LOG_ERROR("Failed to recreate index %s on table %s", index_meta->name(), table_meta_->name());
+      return rc;
+    }
+
+    RecordScanner *scanner = nullptr;
+    rc                     = get_record_scanner(scanner, trx, ReadWriteMode::READ_ONLY);
+    if (rc != RC::SUCCESS) {
+      delete index;
+      return rc;
+    }
+
+    Record record;
+    while (OB_SUCC(rc = scanner->next(record))) {
+      rc = index->insert_entry(record.data(), &record.rid());
+      if (rc != RC::SUCCESS) {
+        scanner->close_scan();
+        delete scanner;
+        delete index;
+        return rc;
+      }
+    }
+    if (rc == RC::RECORD_EOF) {
+      rc = RC::SUCCESS;
+    }
+    scanner->close_scan();
+    delete scanner;
+
+    indexes_.push_back(index);
+    LOG_INFO("Rebuilt index %s on table %s", index_meta->name(), table_meta_->name());
+  }
+  return RC::SUCCESS;
+}
+
+RC HeapTableEngine::add_column(const AttrInfoSqlNode &attr_info)
+{
+  if (table_meta_->storage_engine() != StorageEngine::HEAP) {
+    LOG_WARN("ADD COLUMN is not supported for non-heap engine. table=%s", table_meta_->name());
+    return RC::UNSUPPORTED;
+  }
+
+  if (table_meta_->field(attr_info.name.c_str()) != nullptr) {
+    return RC::SCHEMA_TABLE_EXIST;
+  }
+
+  const int old_record_size = table_meta_->record_size();
+
+  vector<unique_ptr<char[]>> saved_records;
+  RecordScanner             *scanner = nullptr;
+  RC                         rc      = get_record_scanner(scanner, nullptr, ReadWriteMode::READ_ONLY);
+  if (rc != RC::SUCCESS) {
+    return rc;
+  }
+
+  Record record;
+  while (OB_SUCC(rc = scanner->next(record))) {
+    auto buf = make_unique<char[]>(old_record_size);
+    memcpy(buf.get(), record.data(), old_record_size);
+    saved_records.emplace_back(std::move(buf));
+  }
+  if (rc != RC::RECORD_EOF) {
+    scanner->close_scan();
+    delete scanner;
+    return rc;
+  }
+  scanner->close_scan();
+  delete scanner;
+
+  TableMeta new_table_meta(*table_meta_);
+  rc = new_table_meta.add_field(attr_info);
+  if (rc != RC::SUCCESS) {
+    return rc;
+  }
+
+  rc = sync();
+  if (OB_FAIL(rc)) {
+    LOG_WARN("Failed to sync table before alter. table=%s", table_meta_->name());
+  }
+
+  for (Index *index : indexes_) {
+    delete index;
+  }
+  indexes_.clear();
+
+  for (int i = 0; i < table_meta_->index_num(); i++) {
+    const IndexMeta *index_meta = table_meta_->index(i);
+    string           index_path = table_index_file(db_->path().c_str(), table_meta_->name(), index_meta->name());
+    RC               rm_rc      = remove_file_if_exists(index_path);
+    if (OB_FAIL(rm_rc) && OB_SUCC(rc)) {
+      rc = rm_rc;
+    }
+  }
+
+  if (record_handler_ != nullptr) {
+    delete record_handler_;
+    record_handler_ = nullptr;
+  }
+  if (data_buffer_pool_ != nullptr) {
+    data_buffer_pool_->close_file();
+    data_buffer_pool_ = nullptr;
+  }
+
+  string data_file = table_data_file(db_->path().c_str(), table_meta_->name());
+  RC     rm_rc     = remove_file_if_exists(data_file);
+  if (OB_FAIL(rm_rc)) {
+    return rm_rc;
+  }
+
+  BufferPoolManager &bpm = db_->buffer_pool_manager();
+  rc                     = bpm.create_file(data_file.c_str());
+  if (rc != RC::SUCCESS) {
+    LOG_ERROR("Failed to recreate data file %s", data_file.c_str());
+    return rc;
+  }
+
+  table_meta_->swap(new_table_meta);
+
+  rc = init();
+  if (rc != RC::SUCCESS) {
+    return rc;
+  }
+
+  const int new_record_size = table_meta_->record_size();
+  for (const auto &old_data : saved_records) {
+    char *new_buf = static_cast<char *>(malloc(new_record_size));
+    if (new_buf == nullptr) {
+      LOG_ERROR("Failed to allocate memory when altering table %s", table_meta_->name());
+      return RC::NOMEM;
+    }
+    memset(new_buf, 0, new_record_size);
+    memcpy(new_buf, old_data.get(), old_record_size);
+
+    Record new_record;
+    new_record.set_data_owner(new_buf, new_record_size);
+    rc = insert_record(new_record);
+    if (rc != RC::SUCCESS) {
+      LOG_ERROR("Failed to re-insert record when altering table %s", table_meta_->name());
+      return rc;
+    }
+  }
+
+  rc = persist_table_meta();
+  if (rc != RC::SUCCESS) {
+    return rc;
+  }
+
+  rc = rebuild_indexes(nullptr);
+  if (rc != RC::SUCCESS) {
+    return rc;
+  }
+
+  LOG_INFO("Successfully added column %s to table %s", attr_info.name.c_str(), table_meta_->name());
+  return RC::SUCCESS;
 }

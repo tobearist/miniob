@@ -66,7 +66,10 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
 %token  SEMICOLON
         BY
         CREATE
+        ALTER
         DROP
+        ADD
+        COLUMN
         GROUP
         TABLE
         TABLES
@@ -187,6 +190,7 @@ UnboundAggregateExpr *create_aggregate_expression(const char *aggregate_name,
 %type <sql_node>            delete_stmt
 %type <sql_node>            create_table_stmt
 %type <sql_node>            drop_table_stmt
+%type <sql_node>            alter_table_stmt
 %type <sql_node>            analyze_table_stmt
 %type <sql_node>            show_tables_stmt
 %type <sql_node>            desc_table_stmt
@@ -225,6 +229,7 @@ command_wrapper:
   | delete_stmt
   | create_table_stmt
   | drop_table_stmt
+  | alter_table_stmt
   | analyze_table_stmt
   | show_tables_stmt
   | desc_table_stmt
@@ -281,6 +286,23 @@ drop_table_stmt:    /*drop table 语句的语法解析树*/
       $$ = new ParsedSqlNode(SCF_DROP_TABLE);
       $$->drop_table.relation_name = $3;
     };
+
+alter_table_stmt:    /* alter table add column */
+    ALTER TABLE ID ADD COLUMN attr_def
+    {
+      $$ = new ParsedSqlNode(SCF_ALTER_TABLE);
+      $$->alter_table.relation_name = $3;
+      $$->alter_table.new_attribute = *$6;
+      delete $6;
+    }
+    | ALTER TABLE ID ADD attr_def
+    {
+      $$ = new ParsedSqlNode(SCF_ALTER_TABLE);
+      $$->alter_table.relation_name = $3;
+      $$->alter_table.new_attribute = *$5;
+      delete $5;
+    }
+    ;
 
 analyze_table_stmt:  /* analyze table 语法的语法解析树*/
     ANALYZE TABLE ID {
